@@ -18,7 +18,14 @@ import {
   Camera, 
   ShieldAlert,
   ArrowRight,
-  Workflow
+  Workflow,
+  Hammer,
+  Zap,
+  Droplets,
+  Trash2,
+  Home,
+  Sparkles,
+  Award
 } from 'lucide-react';
 import { 
   BuildingEntity, 
@@ -26,32 +33,50 @@ import {
   LawBill, 
   SimulationState 
 } from '../types/politicalSimulation';
+import { 
+  BUILDABLE_CATALOG, 
+  BuildableItem, 
+  CityZonedBuilding, 
+  DEVELOPMENT_MILESTONES, 
+  BuildableCategory 
+} from '../types/cityGrid';
 
-export type DockTab = 'OVERVIEW' | 'CABINET_LAWS' | 'ECONOMY' | 'PARLIAMENT' | 'CRISES' | 'CAUSAL' | 'INSPECTOR';
+export type DockTab = 'CONSTRUCTION' | 'OVERVIEW' | 'CABINET_LAWS' | 'ECONOMY' | 'PARLIAMENT' | 'CRISES' | 'CAUSAL' | 'INSPECTOR';
 
 interface BottomDockProps {
   state: SimulationState;
+  activeBuildTool: BuildableItem | null;
+  onSelectBuildTool: (item: BuildableItem | null) => void;
   selectedBuilding: BuildingEntity | null;
+  selectedZonedBuilding: CityZonedBuilding | null;
   onSelectBuilding: (id: string | null) => void;
   onFlyToCoord: (coord: [number, number, number]) => void;
   onToggleLaw: (billId: string) => void;
   onResolveCrisis: (crisisId: string, optionId: string) => void;
   onUpdateTaxRate: (taxKey: 'corporate' | 'income' | 'vat', value: number) => void;
   onUpdateSpending: (spendKey: 'welfare' | 'policing' | 'healthcare' | 'subsidies', value: number) => void;
+  onOpenCharterModal?: () => void;
+  onDemolishZonedBuilding?: (bId: string) => void;
 }
 
 export const BottomDock: React.FC<BottomDockProps> = ({
   state,
+  activeBuildTool,
+  onSelectBuildTool,
   selectedBuilding,
+  selectedZonedBuilding,
   onSelectBuilding,
   onFlyToCoord,
   onToggleLaw,
   onResolveCrisis,
   onUpdateTaxRate,
-  onUpdateSpending
+  onUpdateSpending,
+  onOpenCharterModal,
+  onDemolishZonedBuilding
 }) => {
   const [isCollapsed, setIsCollapsed] = useState<boolean>(false);
-  const [activeTab, setActiveTab] = useState<DockTab>('OVERVIEW');
+  const [activeTab, setActiveTab] = useState<DockTab>('CONSTRUCTION');
+  const [selectedCategory, setSelectedCategory] = useState<BuildableCategory | 'ALL'>('ALL');
 
   const unresolvedCrises = state.crises.filter(c => !c.resolved);
 
@@ -73,6 +98,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
           <div className="flex items-center justify-between border-b border-slate-800/80 px-4 py-2 bg-slate-950/80 text-xs font-mono">
             <div className="flex items-center gap-1 overflow-x-auto no-scrollbar">
               {[
+                { key: 'CONSTRUCTION', label: '🏗️ Build & Zone', icon: <Hammer className="w-4 h-4 text-amber-400" /> },
                 { key: 'OVERVIEW', label: 'City & Districts', icon: <Building2 className="w-4 h-4" /> },
                 { key: 'CABINET_LAWS', label: 'Cabinet & Laws', icon: <FileText className="w-4 h-4" /> },
                 { key: 'ECONOMY', label: 'Budget & Taxes', icon: <DollarSign className="w-4 h-4" /> },
@@ -89,7 +115,9 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                 },
                 { 
                   key: 'INSPECTOR', 
-                  label: selectedBuilding ? `Inspector [${selectedBuilding.name.slice(0, 14)}...]` : 'Inspector', 
+                  label: selectedZonedBuilding 
+                    ? `Inspector [${selectedZonedBuilding.name.slice(0, 14)}...]` 
+                    : (selectedBuilding ? `Inspector [${selectedBuilding.name.slice(0, 14)}...]` : 'Inspector'), 
                   icon: <Eye className="w-4 h-4 text-cyan-400" /> 
                 }
               ].map(tab => {
@@ -144,6 +172,191 @@ export const BottomDock: React.FC<BottomDockProps> = ({
 
           {/* Body Content */}
           <div className="p-4 overflow-y-auto max-h-[310px] text-xs font-mono text-slate-300">
+            {/* 0. CONSTRUCTION & ZONING TAB */}
+            {activeTab === 'CONSTRUCTION' && (
+              <div className="space-y-3.5">
+                {/* Demand & Milestone HUD Strip */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-slate-950/80 p-2.5 rounded-xl border border-slate-800">
+                  {/* R-C-I Demand Meters */}
+                  <div className="space-y-1">
+                    <span className="text-[10px] text-slate-400 uppercase font-bold block">Economic Demand</span>
+                    <div className="flex items-center gap-3 text-[11px]">
+                      <div className="flex items-center gap-1.5 flex-1">
+                        <span className="text-emerald-400 font-bold">R</span>
+                        <div className="h-2 flex-1 bg-slate-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-emerald-500 rounded-full transition-all"
+                            style={{ width: `${state.rciDemand?.res ?? 50}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-slate-400">{state.rciDemand?.res ?? 50}%</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-1">
+                        <span className="text-sky-400 font-bold">C</span>
+                        <div className="h-2 flex-1 bg-slate-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-sky-500 rounded-full transition-all"
+                            style={{ width: `${state.rciDemand?.com ?? 30}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-slate-400">{state.rciDemand?.com ?? 30}%</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-1">
+                        <span className="text-amber-400 font-bold">I</span>
+                        <div className="h-2 flex-1 bg-slate-800 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-amber-500 rounded-full transition-all"
+                            style={{ width: `${state.rciDemand?.ind ?? 45}%` }}
+                          />
+                        </div>
+                        <span className="text-[10px] text-slate-400">{state.rciDemand?.ind ?? 45}%</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Settlement Milestone */}
+                  <div className="space-y-1 border-x border-slate-800/80 px-3">
+                    <div className="flex items-center justify-between text-[10px] text-slate-400 uppercase font-bold">
+                      <span>Development Tier</span>
+                      <span className="text-amber-400 font-bold">
+                        Pop: {state.totalPopulation || 12}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-slate-100 font-semibold">
+                        {DEVELOPMENT_MILESTONES[state.milestoneLevel || 0]?.name || 'Pioneer Outpost'}
+                      </span>
+                      <span className="text-[10px] text-slate-400 bg-slate-800/80 px-1.5 py-0.5 rounded">
+                        {DEVELOPMENT_MILESTONES[state.milestoneLevel || 0]?.governanceModel}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Founding Charter Button */}
+                  <div className="flex items-center justify-end gap-2">
+                    {onOpenCharterModal && (
+                      <button
+                        onClick={onOpenCharterModal}
+                        className="px-3 py-1.5 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-lg text-xs flex items-center gap-1.5 transition-colors"
+                      >
+                        <Award className="w-3.5 h-3.5" />
+                        <span>Founding Charter</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {/* Active Tool Banner */}
+                {activeBuildTool && (
+                  <div className="flex items-center justify-between bg-cyan-950/50 border border-cyan-500/40 px-3 py-1.5 rounded-lg text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="text-base">{activeBuildTool.icon}</span>
+                      <span className="text-cyan-300 font-bold">{activeBuildTool.name}</span>
+                      <span className="text-slate-400">
+                        ({activeBuildTool.cost > 0 ? `$${activeBuildTool.cost}M` : 'Free'}) · Click grid cells in 3D scene to build
+                      </span>
+                    </div>
+                    <button
+                      onClick={() => onSelectBuildTool(null)}
+                      className="px-2.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[11px] font-bold"
+                    >
+                      Deselect Tool [ESC]
+                    </button>
+                  </div>
+                )}
+
+                {/* Category Filters */}
+                <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+                  {[
+                    { key: 'ALL', label: 'All Catalog' },
+                    { key: 'ROAD', label: '🚜 Roads' },
+                    { key: 'UTILITY', label: '⚡ Utilities' },
+                    { key: 'ZONE', label: '📐 Zoning' },
+                    { key: 'CIVIC', label: '🏛️ Civic & Emergency' },
+                    { key: 'DEMOLISH', label: '💥 Demolish' }
+                  ].map(cat => (
+                    <button
+                      key={cat.key}
+                      onClick={() => setSelectedCategory(cat.key as any)}
+                      className={`px-3 py-1 rounded-md text-[11px] whitespace-nowrap transition-colors ${
+                        selectedCategory === cat.key
+                          ? 'bg-slate-100 text-slate-900 font-bold shadow-xs'
+                          : 'bg-slate-900 text-slate-400 hover:text-slate-200 border border-slate-800'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Catalog Cards Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-5 gap-2.5">
+                  {BUILDABLE_CATALOG.filter(item => 
+                    selectedCategory === 'ALL' || item.category === selectedCategory
+                  ).map(item => {
+                    const isSelected = activeBuildTool?.id === item.id;
+                    const isAffordable = state.treasury >= item.cost;
+                    const currentMilestone = state.milestoneLevel || 0;
+                    const isUnlocked = currentMilestone >= item.unlockedAtMilestone;
+
+                    return (
+                      <div
+                        key={item.id}
+                        onClick={() => {
+                          if (isUnlocked) {
+                            onSelectBuildTool(isSelected ? null : item);
+                          }
+                        }}
+                        className={`p-2.5 rounded-xl border flex flex-col justify-between transition-all select-none cursor-pointer ${
+                          !isUnlocked
+                            ? 'opacity-40 bg-slate-950/40 border-slate-850 cursor-not-allowed'
+                            : isSelected
+                            ? 'bg-cyan-950/40 border-cyan-400 ring-2 ring-cyan-400/50 shadow-md'
+                            : isAffordable
+                            ? 'bg-slate-900/60 border-slate-800 hover:border-slate-700 hover:bg-slate-850'
+                            : 'bg-slate-950/40 border-rose-900/30 opacity-70'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <span className="text-xl">{item.icon}</span>
+                            <span className={`text-[11px] font-bold tabular-nums ${
+                              item.cost === 0 ? 'text-slate-400' : isAffordable ? 'text-emerald-400' : 'text-rose-400'
+                            }`}>
+                              {item.cost === 0 ? 'FREE' : `$${item.cost}M`}
+                            </span>
+                          </div>
+                          <strong className="text-xs text-slate-100 block mt-1 line-clamp-1">
+                            {item.name}
+                          </strong>
+                          <p className="text-[10px] text-slate-400 mt-0.5 line-clamp-2 leading-relaxed">
+                            {item.description}
+                          </p>
+                        </div>
+
+                        <div className="mt-2 pt-1.5 border-t border-slate-800/60 flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                          {item.powerOutput ? (
+                            <span className="text-amber-400">⚡ +{item.powerOutput}kW</span>
+                          ) : item.waterOutput ? (
+                            <span className="text-sky-400">💧 +{item.waterOutput}kL</span>
+                          ) : item.jobsProvided ? (
+                            <span className="text-emerald-400">Jobs: +{item.jobsProvided}</span>
+                          ) : item.zoneType ? (
+                            <span className="text-cyan-300">Zone Parcel</span>
+                          ) : (
+                            <span className="text-slate-500">Size: {item.width}x{item.depth}</span>
+                          )}
+                          {!isUnlocked && (
+                            <span className="text-rose-400">Locked</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* 1. OVERVIEW TAB */}
             {activeTab === 'OVERVIEW' && (
               <div className="space-y-4">
@@ -643,7 +856,71 @@ export const BottomDock: React.FC<BottomDockProps> = ({
             {/* 7. INSPECTOR TAB */}
             {activeTab === 'INSPECTOR' && (
               <div>
-                {selectedBuilding ? (
+                {selectedZonedBuilding ? (
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <div>
+                        <strong className="text-sm text-slate-100 block">{selectedZonedBuilding.name}</strong>
+                        <span className="text-[11px] text-slate-400 font-mono">
+                          Category: {selectedZonedBuilding.type} · Type: {selectedZonedBuilding.subType} · Grid: [{selectedZonedBuilding.gridX}, {selectedZonedBuilding.gridZ}]
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {onDemolishZonedBuilding && (
+                          <button
+                            onClick={() => onDemolishZonedBuilding(selectedZonedBuilding.id)}
+                            className="px-2.5 py-1 bg-rose-950/80 hover:bg-rose-900 text-rose-300 border border-rose-800 rounded text-xs flex items-center gap-1 transition-colors"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>Demolish</span>
+                          </button>
+                        )}
+                        <button
+                          onClick={() => onSelectBuilding(null)}
+                          className="px-2 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-[10px]"
+                        >
+                          Deselect
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-900/60 p-3 rounded-lg border border-slate-800 font-mono">
+                      <div>
+                        <span className="text-[10px] text-slate-500 uppercase block">Construction</span>
+                        <span className={`text-sm font-bold ${
+                          selectedZonedBuilding.isConstructing ? 'text-amber-400' : 'text-emerald-400'
+                        }`}>
+                          {selectedZonedBuilding.isConstructing 
+                            ? `Active (${selectedZonedBuilding.constructionProgress}%)` 
+                            : 'Completed'}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 uppercase block">Utility Grid</span>
+                        <div className="text-xs font-semibold flex items-center gap-2 mt-0.5">
+                          <span className={selectedZonedBuilding.powerConnected ? 'text-amber-400' : 'text-slate-600'}>
+                            ⚡ {selectedZonedBuilding.powerConnected ? 'Power ON' : 'No Power'}
+                          </span>
+                          <span className={selectedZonedBuilding.waterConnected ? 'text-sky-400' : 'text-slate-600'}>
+                            💧 {selectedZonedBuilding.waterConnected ? 'Water ON' : 'Dry'}
+                          </span>
+                        </div>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 uppercase block">Occupancy / Capacity</span>
+                        <span className="text-sm font-bold text-slate-100 tabular-nums">
+                          {selectedZonedBuilding.occupancy} / {selectedZonedBuilding.maxCapacity || 0} residents
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] text-slate-500 uppercase block">Workforce & Yield</span>
+                        <span className="text-sm font-bold text-cyan-300 tabular-nums">
+                          {selectedZonedBuilding.jobs} jobs · +${selectedZonedBuilding.taxYield}M/mo
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : selectedBuilding ? (
                   <div className="space-y-3">
                     <div className="flex items-center justify-between border-b border-slate-800 pb-2">
                       <div>
@@ -705,7 +982,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                   </div>
                 ) : (
                   <div className="p-8 text-center text-slate-500">
-                    Click any building in the 3D city scene to inspect its jobs, output, operating status, and worker dissatisfaction.
+                    Click any road, power plant, clinic, or zoned building in the 3D city scene to inspect its power connectivity, water access, jobs, and occupancy.
                   </div>
                 )}
               </div>

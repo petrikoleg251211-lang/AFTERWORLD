@@ -1,27 +1,37 @@
 /**
- * AFTERWORLD — Interactive 3D WebGL City Viewport
- * Real-time controllable tactical isometric camera, raycasting selection, and animated simulation.
+ * AFTERWORLD — Interactive 3D WebGL City Viewport & Construction Engine
+ * Tactical isometric camera, 32x32 cellular terrain grid, holographic placement cursor,
+ * procedural architectural rendering, and animated agent loops.
  */
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
-import { BuildingEntity, District, SimulationState } from '../types/politicalSimulation';
+import { SimulationState, BuildingEntity } from '../types/politicalSimulation';
+import { BuildableItem, CityZonedBuilding, GridCell } from '../types/cityGrid';
 import { 
   CityMaterials, 
   createCityMaterials, 
   buildProceduralBuilding, 
-  buildCityInfrastructure, 
+  buildProceduralGridTerrain,
+  GridTerrainVisuals,
+  createCityBuildingMesh,
   createAgentSystems, 
   AnimatedAgentSystem 
 } from './cityBuilder';
+import { CELL_WORLD_SIZE, GRID_SIZE, gridToWorld, worldToGrid } from '../engine/cityGridCore';
 
-// Pre-allocated math objects to eliminate garbage collection inside loops
+// Reusable math objects to eliminate garbage collection inside rendering loops
 const _raycaster = new THREE.Raycaster();
 const _pointerVec = new THREE.Vector2();
+const _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+const _intersectPoint = new THREE.Vector3();
 
 interface ThreeCityViewportProps {
   simulationState: SimulationState;
+  activeBuildTool: BuildableItem | null;
+  onPlaceItem: (gridX: number, gridZ: number, item: BuildableItem) => void;
+  onCancelBuildTool?: () => void;
   selectedBuildingId: string | null;
   onSelectBuilding: (buildingId: string | null) => void;
   cameraTargetCoord: [number, number, number] | null;
@@ -30,6 +40,9 @@ interface ThreeCityViewportProps {
 
 export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
   simulationState,
+  activeBuildTool,
+  onPlaceItem,
+  onCancelBuildTool,
   selectedBuildingId,
   onSelectBuilding,
   cameraTargetCoord,
@@ -39,15 +52,20 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+  const materialsRef = useRef<CityMaterials | null>(null);
+  const terrainVisualsRef = useRef<GridTerrainVisuals | null>(null);
   const buildingMeshesRef = useRef<Map<string, THREE.Group>>(new Map());
   const agentSystemRef = useRef<AnimatedAgentSystem | null>(null);
-  const materialsRef = useRef<CityMaterials | null>(null);
   const selectionMarkerRef = useRef<THREE.Mesh | null>(null);
 
+  // Holographic placement cursor mesh ref
+  const placementCursorRef = useRef<THREE.Group | null>(null);
+  const [hoveredGridCell, setHoveredGridCell] = useState<{ x: number; z: number; valid: boolean; reason?: string } | null>(null);
+
   // Camera Orbit & Pan State
-  const cameraFocusTarget = useRef<THREE.Vector3>(new THREE.Vector3(0, 2, 0));
+  const cameraFocusTarget = useRef<THREE.Vector3>(new THREE.Vector3(0, 1, 0));
   const cameraSpherical = useRef<{ radius: number; theta: number; phi: number }>({
-    radius: 72,
+    radius: 68,
     theta: Math.PI / 4,
     phi: Math.PI / 3.4
   });
@@ -55,23 +73,23 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
   const dragButton = useRef<number>(0);
   const lastMousePos = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
-  // Smoke particles
+  // Industrial Smoke Particles
   const smokeParticlesRef = useRef<THREE.Points | null>(null);
 
-  // Live simulation state reference to avoid stale closures in animate loop
+  // Ref to always have latest state and active tool inside event listeners
   const simStateRef = useRef<SimulationState>(simulationState);
+  const activeToolRef = useRef<BuildableItem | null>(activeBuildTool);
+
   useEffect(() => {
     simStateRef.current = simulationState;
-
-    // Dynamically update building visuals (e.g. strike barricade on foundry)
-    const foundryMesh = buildingMeshesRef.current.get('foundry_alpha');
-    if (foundryMesh) {
-      const barricade = foundryMesh.getObjectByName('strike_barricade');
-      if (barricade) {
-        barricade.visible = simulationState.buildings.foundry_alpha?.operatingStatus === 'ON_STRIKE';
-      }
-    }
   }, [simulationState]);
+
+  useEffect(() => {
+    activeToolRef.current = activeBuildTool;
+    if (placementCursorRef.current) {
+      placementCursorRef.current.visible = activeBuildTool !== null;
+    }
+  }, [activeBuildTool]);
 
   // -------------------------------------------------------------
   // INITIALIZE THREE.JS ENGINE
@@ -83,14 +101,14 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
     const width = container.clientWidth;
     const height = container.clientHeight;
 
-    // 1. Scene & Horizon Fog
+    // 1. Scene & Atmosphere
     const scene = new THREE.Scene();
     scene.background = new THREE.Color(0x070A10);
     scene.fog = new THREE.FogExp2(0x070A10, 0.007);
     sceneRef.current = scene;
 
-    // 2. Perspective Camera (Tactical Isometric Default)
-    const camera = new THREE.PerspectiveCamera(42, width / height, 0.5, 300);
+    // 2. Perspective Camera (Tactical Isometric)
+    const camera = new THREE.PerspectiveCamera(40, width / height, 0.5, 320);
     cameraRef.current = camera;
 
     // 3. Renderer with PBR Settings
@@ -106,25 +124,25 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
 
     container.appendChild(renderer.domElement);
 
-    // 4. Studio Environment Reflection (RoomEnvironment)
+    // 4. Room Environment Reflection
     const pmremGenerator = new THREE.PMREMGenerator(renderer);
     const envTexture = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
     scene.environment = envTexture;
     pmremGenerator.dispose();
 
-    // 5. Lighting Rig (Warm Key + Cool Hemisphere Fill)
-    const hemiLight = new THREE.HemisphereLight(0xBAE6FD, 0x1E293B, 0.9);
+    // 5. Lighting Rig (Warm Key Directional + Cool Ambient Fill)
+    const hemiLight = new THREE.HemisphereLight(0xBAE6FD, 0x1E293B, 0.95);
     hemiLight.position.set(0, 50, 0);
     scene.add(hemiLight);
 
-    const dirLight = new THREE.DirectionalLight(0xFFF7ED, 1.9);
+    const dirLight = new THREE.DirectionalLight(0xFFF7ED, 1.85);
     dirLight.position.set(45, 65, 35);
     dirLight.castShadow = true;
     dirLight.shadow.mapSize.width = 2048;
     dirLight.shadow.mapSize.height = 2048;
     dirLight.shadow.camera.near = 10;
     dirLight.shadow.camera.far = 160;
-    const d = 55;
+    const d = 65;
     dirLight.shadow.camera.left = -d;
     dirLight.shadow.camera.right = d;
     dirLight.shadow.camera.top = d;
@@ -132,46 +150,51 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
     dirLight.shadow.bias = -0.0004;
     scene.add(dirLight);
 
-    // 5. Build City Infrastructure & Materials
+    // 6. Materials & Dynamic 32x32 Procedural Grid Terrain
     const materials = createCityMaterials();
     materialsRef.current = materials;
-    buildCityInfrastructure(scene, materials);
 
-    // 6. Build All Procedural Buildings
-    const meshesMap = new Map<string, THREE.Group>();
-    for (const b of Object.values(simulationState.buildings)) {
-      const bGroup = buildProceduralBuilding(b, materials);
-      scene.add(bGroup);
-      meshesMap.set(b.id, bGroup);
-    }
-    buildingMeshesRef.current = meshesMap;
+    const initialCells = simulationState.gridCells || [];
+    const terrainVisuals = buildProceduralGridTerrain(scene, initialCells, materials);
+    terrainVisualsRef.current = terrainVisuals;
 
-    // 7. Initialize Dynamic Pedestrian & Traffic Systems
-    const agentSys = createAgentSystems(scene, materials);
-    agentSystemRef.current = agentSys;
+    // 7. Dynamic Holographic Placement Cursor
+    const cursorGroup = new THREE.Group();
+    cursorGroup.name = 'placement_cursor';
+    cursorGroup.visible = false;
 
-    // 8. Industrial Smoke Particles
-    const smokeCount = 70;
-    const smokeGeo = new THREE.BufferGeometry();
-    const smokePos = new Float32Array(smokeCount * 3);
-    for (let i = 0; i < smokeCount; i++) {
-      smokePos[i * 3 + 0] = -35 + (Math.random() - 0.5) * 2;
-      smokePos[i * 3 + 1] = 12 + Math.random() * 14;
-      smokePos[i * 3 + 2] = -12 + (Math.random() - 0.5) * 2;
-    }
-    smokeGeo.setAttribute('position', new THREE.BufferAttribute(smokePos, 3));
-    const smokeMat = new THREE.PointsMaterial({
-      color: 0x64748B,
-      size: 1.8,
+    // Green/Red cursor wireframe box
+    const cursorGeo = new THREE.BoxGeometry(CELL_WORLD_SIZE, 0.4, CELL_WORLD_SIZE);
+    const cursorMat = new THREE.MeshBasicMaterial({
+      color: 0x10B981,
       transparent: true,
-      opacity: 0.45
+      opacity: 0.45,
+      wireframe: true
     });
-    const smoke = new THREE.Points(smokeGeo, smokeMat);
-    scene.add(smoke);
-    smokeParticlesRef.current = smoke;
+    const cursorBox = new THREE.Mesh(cursorGeo, cursorMat);
+    cursorBox.name = 'cursor_box';
+    cursorBox.position.y = 0.2;
+    cursorGroup.add(cursorBox);
 
-    // 9. Selected Building Highlight Ring
-    const ringGeo = new THREE.RingGeometry(5, 5.6, 32);
+    // Inner highlight fill
+    const fillGeo = new THREE.PlaneGeometry(CELL_WORLD_SIZE * 0.96, CELL_WORLD_SIZE * 0.96);
+    const fillMat = new THREE.MeshBasicMaterial({
+      color: 0x10B981,
+      transparent: true,
+      opacity: 0.22,
+      side: THREE.DoubleSide
+    });
+    const cursorFill = new THREE.Mesh(fillGeo, fillMat);
+    cursorFill.name = 'cursor_fill';
+    cursorFill.rotation.x = -Math.PI / 2;
+    cursorFill.position.y = 0.05;
+    cursorGroup.add(cursorFill);
+
+    scene.add(cursorGroup);
+    placementCursorRef.current = cursorGroup;
+
+    // 8. Selection Ring for Clicked Building
+    const ringGeo = new THREE.RingGeometry(2.5, 2.9, 32);
     const ringMat = new THREE.MeshBasicMaterial({ color: 0x38BDF8, side: THREE.DoubleSide });
     const selectionRing = new THREE.Mesh(ringGeo, ringMat);
     selectionRing.rotation.x = -Math.PI / 2;
@@ -180,8 +203,32 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
     scene.add(selectionRing);
     selectionMarkerRef.current = selectionRing;
 
+    // 9. Dynamic Agents & Traffic
+    const agentSys = createAgentSystems(scene, materials);
+    agentSystemRef.current = agentSys;
+
+    // 10. Industrial Smoke Particles
+    const smokeCount = 50;
+    const smokeGeo = new THREE.BufferGeometry();
+    const smokePos = new Float32Array(smokeCount * 3);
+    for (let i = 0; i < smokeCount; i++) {
+      smokePos[i * 3 + 0] = -15 + (Math.random() - 0.5) * 3;
+      smokePos[i * 3 + 1] = 5 + Math.random() * 10;
+      smokePos[i * 3 + 2] = -10 + (Math.random() - 0.5) * 3;
+    }
+    smokeGeo.setAttribute('position', new THREE.BufferAttribute(smokePos, 3));
+    const smokeMat = new THREE.PointsMaterial({
+      color: 0x64748B,
+      size: 1.6,
+      transparent: true,
+      opacity: 0.4
+    });
+    const smoke = new THREE.Points(smokeGeo, smokeMat);
+    scene.add(smoke);
+    smokeParticlesRef.current = smoke;
+
     // -------------------------------------------------------------
-    // ANIMATION & RENDER TICK
+    // RENDER LOOP & ANIMATIONS
     // -------------------------------------------------------------
     const clock = new THREE.Clock();
     let animationFrameId: number;
@@ -190,7 +237,7 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
       animationFrameId = requestAnimationFrame(animate);
       const delta = Math.min(clock.getDelta(), 0.1);
 
-      // Smooth camera position calculation from spherical coords
+      // Smooth camera interpolation
       const { radius, theta, phi } = cameraSpherical.current;
       const target = cameraFocusTarget.current;
 
@@ -203,23 +250,27 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
       camera.position.z = THREE.MathUtils.damp(camera.position.z, cz, 8, delta);
       camera.lookAt(target);
 
-      // Read current simulation state from ref to avoid stale closures
-      const currentSim = simStateRef.current;
-      const isStriking = currentSim.buildings.foundry_alpha?.operatingStatus === 'ON_STRIKE';
-      const hasProtest = (currentSim.districts.civic?.unrestLevel ?? 0) > 40 || isStriking;
+      // Rotate kinetic wind turbine blades
+      scene.traverse((obj) => {
+        if (obj.name === 'turbine_rotor') {
+          obj.rotation.z += 2.8 * delta;
+        }
+      });
 
-      // Update Agents & Traffic
+      // Update pedestrian and vehicle agents
+      const currentSim = simStateRef.current;
+      const hasProtest = (currentSim.districts.civic?.unrestLevel ?? 0) > 40;
       agentSys.update(delta, hasProtest);
 
-      // Animate Smoke Particles
+      // Animate smoke particles
       if (smokeParticlesRef.current) {
         const positions = smokeParticlesRef.current.geometry.attributes.position.array as Float32Array;
         for (let i = 0; i < smokeCount; i++) {
-          positions[i * 3 + 1] += (isStriking ? 0.8 : 3.5) * delta;
-          positions[i * 3 + 0] += Math.sin(clock.getElapsedTime() + i) * 0.4 * delta;
-          if (positions[i * 3 + 1] > 26) {
-            positions[i * 3 + 1] = 11;
-            positions[i * 3 + 0] = -35 + (Math.random() - 0.5) * 1.5;
+          positions[i * 3 + 1] += 2.2 * delta;
+          positions[i * 3 + 0] += Math.sin(clock.getElapsedTime() + i) * 0.3 * delta;
+          if (positions[i * 3 + 1] > 18) {
+            positions[i * 3 + 1] = 4;
+            positions[i * 3 + 0] = -15 + (Math.random() - 0.5) * 2;
           }
         }
         smokeParticlesRef.current.geometry.attributes.position.needsUpdate = true;
@@ -230,15 +281,12 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
 
     animate();
 
-    // WebGL Context Loss Handlers
-    const handleContextLost = (event: Event) => {
-      event.preventDefault();
-      console.warn('WebGL context lost. Pausing rendering.');
+    // Context Loss & Resize Listeners
+    const handleContextLost = (e: Event) => {
+      e.preventDefault();
       cancelAnimationFrame(animationFrameId);
     };
-
     const handleContextRestored = () => {
-      console.info('WebGL context restored. Re-animating.');
       animate();
     };
 
@@ -246,7 +294,6 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
     dom.addEventListener('webglcontextlost', handleContextLost, false);
     dom.addEventListener('webglcontextrestored', handleContextRestored, false);
 
-    // Resize Handler
     const handleResize = () => {
       if (!container) return;
       const w = container.clientWidth;
@@ -264,26 +311,29 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
       dom.removeEventListener('webglcontextrestored', handleContextRestored);
       window.removeEventListener('resize', handleResize);
 
-      // Dispose all meshes, geometries, and materials in scene to avoid GPU leaks
+      // Clean up all meshes
       scene.traverse((obj) => {
         if (obj instanceof THREE.Mesh || obj instanceof THREE.Points || obj instanceof THREE.InstancedMesh) {
-          if (obj.geometry) {
-            obj.geometry.dispose();
-          }
+          if (obj.geometry) obj.geometry.dispose();
         }
       });
 
       if (materialsRef.current) {
-        Object.values(materialsRef.current).forEach((mat) => {
-          mat.dispose();
-        });
+        Object.values(materialsRef.current).forEach(mat => mat.dispose());
+      }
+      if (terrainVisualsRef.current) {
+        terrainVisualsRef.current.dispose();
       }
 
       envTexture.dispose();
-      smokeGeo.dispose();
-      smokeMat.dispose();
+      cursorGeo.dispose();
+      cursorMat.dispose();
+      fillGeo.dispose();
+      fillMat.dispose();
       ringGeo.dispose();
       ringMat.dispose();
+      smokeGeo.dispose();
+      smokeMat.dispose();
 
       renderer.dispose();
       if (container.contains(dom)) {
@@ -293,7 +343,70 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
   }, []);
 
   // -------------------------------------------------------------
-  // UPDATE CAMERA TARGET WHEN FLYING TO DISTRICT / EVENT
+  // SYNC 3D BUILDINGS & ROADS WITH SIMULATION STATE
+  // -------------------------------------------------------------
+  useEffect(() => {
+    if (!sceneRef.current || !materialsRef.current) return;
+    const scene = sceneRef.current;
+    const materials = materialsRef.current;
+    const meshesMap = buildingMeshesRef.current;
+
+    // Update Roads and Zones on the Terrain Visuals
+    if (terrainVisualsRef.current && simulationState.gridCells) {
+      terrainVisualsRef.current.updateRoads(simulationState.gridCells);
+      terrainVisualsRef.current.updateZones(simulationState.gridCells);
+    }
+
+    // 1. Zoned & Placed Buildings
+    const currentZonedIds = new Set(Object.keys(simulationState.zonedBuildings || {}));
+    
+    // Remove deleted buildings
+    for (const [id, mesh] of meshesMap.entries()) {
+      if (!currentZonedIds.has(id) && !simulationState.buildings[id]) {
+        scene.remove(mesh);
+        mesh.traverse(c => {
+          if (c instanceof THREE.Mesh && c.geometry) c.geometry.dispose();
+        });
+        meshesMap.delete(id);
+      }
+    }
+
+    // Add or update zoned buildings
+    if (simulationState.zonedBuildings) {
+      for (const b of Object.values(simulationState.zonedBuildings)) {
+        const existing = meshesMap.get(b.id);
+        if (!existing) {
+          const mesh = createCityBuildingMesh(b, materials);
+          scene.add(mesh);
+          meshesMap.set(b.id, mesh);
+        } else {
+          // Check if construction completed
+          const hadScaffolding = existing.getObjectByName('scaffolding') !== undefined;
+          if (hadScaffolding && !b.isConstructing) {
+            scene.remove(existing);
+            existing.traverse(c => {
+              if (c instanceof THREE.Mesh && c.geometry) c.geometry.dispose();
+            });
+            const mesh = createCityBuildingMesh(b, materials);
+            scene.add(mesh);
+            meshesMap.set(b.id, mesh);
+          }
+        }
+      }
+    }
+
+    // Legacy scenario buildings (if loaded)
+    for (const b of Object.values(simulationState.buildings)) {
+      if (!meshesMap.has(b.id)) {
+        const mesh = buildProceduralBuilding(b, materials);
+        scene.add(mesh);
+        meshesMap.set(b.id, mesh);
+      }
+    }
+  }, [simulationState.zonedBuildings, simulationState.gridCells, simulationState.buildings]);
+
+  // -------------------------------------------------------------
+  // UPDATE CAMERA TARGET WHEN FLYING TO COORDINATES
   // -------------------------------------------------------------
   useEffect(() => {
     if (cameraTargetCoord) {
@@ -302,27 +415,38 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
         cameraTargetCoord[1],
         cameraTargetCoord[2]
       );
-      cameraSpherical.current.radius = 48; // Zoom in close to inspected district
+      cameraSpherical.current.radius = 42;
       if (onCameraArrived) onCameraArrived();
     }
   }, [cameraTargetCoord, onCameraArrived]);
 
   // -------------------------------------------------------------
-  // UPDATE SELECTION HALO POSITION
+  // UPDATE SELECTION RING POSITION
   // -------------------------------------------------------------
   useEffect(() => {
     if (!selectionMarkerRef.current) return;
-    if (selectedBuildingId && simulationState.buildings[selectedBuildingId]) {
-      const b = simulationState.buildings[selectedBuildingId];
-      selectionMarkerRef.current.position.set(b.position[0], 0.15, b.position[2]);
-      selectionMarkerRef.current.visible = true;
-    } else {
-      selectionMarkerRef.current.visible = false;
+    const ring = selectionMarkerRef.current;
+
+    if (selectedBuildingId) {
+      const zonedB = simulationState.zonedBuildings?.[selectedBuildingId];
+      if (zonedB) {
+        const [wx, , wz] = gridToWorld(zonedB.gridX, zonedB.gridZ);
+        ring.position.set(wx, 0.15, wz);
+        ring.visible = true;
+        return;
+      }
+      const legacyB = simulationState.buildings[selectedBuildingId];
+      if (legacyB) {
+        ring.position.set(legacyB.position[0], 0.15, legacyB.position[2]);
+        ring.visible = true;
+        return;
+      }
     }
-  }, [selectedBuildingId, simulationState.buildings]);
+    ring.visible = false;
+  }, [selectedBuildingId, simulationState.zonedBuildings, simulationState.buildings]);
 
   // -------------------------------------------------------------
-  // CONTROLS: POINTER EVENTS (Orbit, Pan, Zoom & Raycasting)
+  // CONTROLS: POINTER MOVE (RAYCASTING & PLACEMENT CURSOR)
   // -------------------------------------------------------------
   const handlePointerDown = (e: React.PointerEvent) => {
     isDragging.current = true;
@@ -331,6 +455,83 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
   };
 
   const handlePointerMove = (e: React.PointerEvent) => {
+    const rect = mountRef.current?.getBoundingClientRect();
+    if (!rect || !cameraRef.current) return;
+
+    // Raycast ground plane to update holographic cursor
+    const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    _pointerVec.set(x, y);
+    _raycaster.setFromCamera(_pointerVec, cameraRef.current);
+
+    if (_raycaster.ray.intersectPlane(_groundPlane, _intersectPoint)) {
+      const [gx, gz] = worldToGrid(_intersectPoint.x, _intersectPoint.z);
+      const activeTool = activeToolRef.current;
+
+      if (activeTool && placementCursorRef.current) {
+        const [wx, , wz] = gridToWorld(gx, gz);
+        const w = activeTool.width || 1;
+        const d = activeTool.depth || 1;
+        const offsetX = ((w - 1) * CELL_WORLD_SIZE) / 2;
+        const offsetZ = ((d - 1) * CELL_WORLD_SIZE) / 2;
+
+        placementCursorRef.current.position.set(wx + offsetX, 0, wz + offsetZ);
+
+        // Resize cursor geometry if needed
+        const cursorBox = placementCursorRef.current.getObjectByName('cursor_box') as THREE.Mesh;
+        const cursorFill = placementCursorRef.current.getObjectByName('cursor_fill') as THREE.Mesh;
+
+        if (cursorBox && cursorFill) {
+          cursorBox.scale.set(w, 1, d);
+          cursorFill.scale.set(w, 1, d);
+
+          // Validate placement
+          const currentCells = simStateRef.current.gridCells || [];
+          const targetCell = currentCells[gz * GRID_SIZE + gx];
+
+          let isValid = true;
+          let reason = '';
+
+          if (!targetCell) {
+            isValid = false;
+            reason = 'Outside boundary';
+          } else if (activeTool.category === 'DEMOLISH') {
+            isValid = targetCell.hasRoad || targetCell.zone !== 'NONE' || Boolean(targetCell.buildingId);
+            reason = isValid ? 'Demolish target' : 'Nothing to clear';
+          } else if (activeTool.category === 'ROAD') {
+            isValid = targetCell.terrain !== 'WATER' && !targetCell.buildingId && !targetCell.hasRoad;
+            reason = isValid ? 'Ready to pave' : (targetCell.terrain === 'WATER' ? 'Water obstacle' : 'Occupied');
+          } else if (activeTool.category === 'ZONE') {
+            isValid = targetCell.terrain !== 'WATER' && !targetCell.hasRoad && !targetCell.buildingId;
+            reason = isValid ? 'Ready to zone' : 'Occupied / Water';
+          } else {
+            // Civic or Utility
+            if (simStateRef.current.treasury < activeTool.cost) {
+              isValid = false;
+              reason = 'Insufficient funds';
+            } else if (targetCell.terrain === 'WATER') {
+              isValid = false;
+              reason = 'Cannot build on water';
+            } else if (targetCell.hasRoad || targetCell.buildingId) {
+              isValid = false;
+              reason = 'Footprint occupied';
+            } else {
+              isValid = true;
+              reason = 'Valid site';
+            }
+          }
+
+          const colorHex = isValid ? 0x10B981 : 0xEF4444;
+          (cursorBox.material as THREE.MeshBasicMaterial).color.setHex(colorHex);
+          (cursorFill.material as THREE.MeshBasicMaterial).color.setHex(colorHex);
+
+          setHoveredGridCell({ x: gx, z: gz, valid: isValid, reason });
+        }
+      }
+    }
+
+    // Camera Panning / Orbiting
     if (!isDragging.current) return;
     const dx = e.clientX - lastMousePos.current.x;
     const dy = e.clientY - lastMousePos.current.y;
@@ -361,38 +562,53 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
   };
 
   const handlePointerUp = (e: React.PointerEvent) => {
-    // If click didn't move far, treat as raycast click!
     const distMoved = Math.hypot(
       e.clientX - lastMousePos.current.x,
       e.clientY - lastMousePos.current.y
     );
     isDragging.current = false;
 
-    if (distMoved < 5 && e.button === 0 && cameraRef.current && sceneRef.current) {
-      const rect = mountRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    // Right-click cancels build mode
+    if (e.button === 2 && activeToolRef.current && onCancelBuildTool) {
+      onCancelBuildTool();
+      return;
+    }
 
-      _pointerVec.set(x, y);
-      _raycaster.setFromCamera(_pointerVec, cameraRef.current);
-
-      const intersects = _raycaster.intersectObjects(sceneRef.current.children, true);
-      let foundId: string | null = null;
-
-      for (const hit of intersects) {
-        let curr: THREE.Object3D | null = hit.object;
-        while (curr) {
-          if (curr.userData && curr.userData.buildingId) {
-            foundId = curr.userData.buildingId;
-            break;
-          }
-          curr = curr.parent;
-        }
-        if (foundId) break;
+    // Left-click with active build tool -> place item!
+    if (distMoved < 5 && e.button === 0) {
+      const activeTool = activeToolRef.current;
+      if (activeTool && hoveredGridCell && hoveredGridCell.valid) {
+        onPlaceItem(hoveredGridCell.x, hoveredGridCell.z, activeTool);
+        return;
       }
 
-      onSelectBuilding(foundId);
+      // If no active build tool, treat click as building inspector raycast!
+      if (!activeTool && cameraRef.current && sceneRef.current) {
+        const rect = mountRef.current?.getBoundingClientRect();
+        if (!rect) return;
+        const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+        const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+        _pointerVec.set(x, y);
+        _raycaster.setFromCamera(_pointerVec, cameraRef.current);
+
+        const intersects = _raycaster.intersectObjects(sceneRef.current.children, true);
+        let foundId: string | null = null;
+
+        for (const hit of intersects) {
+          let curr: THREE.Object3D | null = hit.object;
+          while (curr) {
+            if (curr.userData && curr.userData.buildingId) {
+              foundId = curr.userData.buildingId;
+              break;
+            }
+            curr = curr.parent;
+          }
+          if (foundId) break;
+        }
+
+        onSelectBuilding(foundId);
+      }
     }
   };
 
@@ -400,8 +616,8 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
     e.preventDefault();
     cameraSpherical.current.radius = THREE.MathUtils.clamp(
       cameraSpherical.current.radius + e.deltaY * 0.06,
-      20,
-      130
+      18,
+      140
     );
   };
 
@@ -413,12 +629,39 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
       onPointerUp={handlePointerUp}
       onWheel={handleWheel}
       onContextMenu={(e) => e.preventDefault()}
-      className="relative w-full h-full cursor-grab active:cursor-grabbing select-none overflow-hidden"
+      className={`relative w-full h-full select-none overflow-hidden ${
+        activeBuildTool ? 'cursor-crosshair' : 'cursor-grab active:cursor-grabbing'
+      }`}
     >
-      {/* Discreet 3D Control Hints Overlay */}
-      <div className="absolute top-3 left-3 z-10 pointer-events-none bg-slate-900/80 backdrop-blur-md border border-slate-800 px-3 py-1.5 rounded-lg text-[11px] font-mono text-slate-400">
-        <span className="text-cyan-400 font-bold">3D CONTROLS: </span>
-        Left-Drag Orbit · Right-Drag Pan · Scroll Zoom · Click Building to Inspect
+      {/* 3D Viewport Helper HUD */}
+      <div className="absolute top-3 left-3 z-10 pointer-events-none flex flex-col gap-1.5">
+        <div className="bg-slate-900/85 backdrop-blur-md border border-slate-800 px-3 py-1.5 rounded-lg text-[11px] font-mono text-slate-400 flex items-center gap-2 shadow-lg">
+          <span className="text-cyan-400 font-bold">TACTICAL 3D: </span>
+          <span>Left-Drag Orbit · Right-Drag Pan · Scroll Zoom</span>
+          {activeBuildTool && (
+            <span className="text-amber-400 font-bold ml-2">· Right-Click to Cancel</span>
+          )}
+        </div>
+
+        {/* Active Tool Holographic Status Badge */}
+        {activeBuildTool && hoveredGridCell && (
+          <div
+            className={`border px-3 py-1.5 rounded-lg text-xs font-mono backdrop-blur-md shadow-xl flex items-center gap-2 ${
+              hoveredGridCell.valid
+                ? 'bg-emerald-950/90 border-emerald-500/80 text-emerald-200'
+                : 'bg-rose-950/90 border-rose-500/80 text-rose-200'
+            }`}
+          >
+            <span className="text-base">{activeBuildTool.icon}</span>
+            <span className="font-semibold">{activeBuildTool.name}:</span>
+            <span>Grid [{hoveredGridCell.x}, {hoveredGridCell.z}]</span>
+            <span className="opacity-60">·</span>
+            <span className="font-bold">{hoveredGridCell.reason}</span>
+            {activeBuildTool.cost > 0 && (
+              <span className="opacity-80">(-${activeBuildTool.cost}M)</span>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -48,8 +48,10 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   mode,
   onToggleMode
 }) => {
-  const activeStrikes = Object.values(state.buildings).filter(b => b.operatingStatus === 'ON_STRIKE').length;
-  const coalitionSeats = state.parties.sdu.inCoalition ? state.parties.sdu.seats + state.parties.fmc.seats : state.parties.fmc.seats;
+  const activeStrikes = Object.values(state.buildings || {}).filter(b => b.operatingStatus === 'ON_STRIKE').length;
+  const sduSeats = state.parties?.sdu?.inCoalition ? state.parties.sdu.seats : 0;
+  const fmcSeats = state.parties?.fmc?.seats || 0;
+  const coalitionSeats = sduSeats + fmcSeats;
   const hasMajority = coalitionSeats >= 101;
 
   return (
@@ -62,7 +64,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
           </span>
           <span className="text-xs text-slate-500 font-mono hidden sm:inline" aria-hidden="true">/</span>
           <span className="text-xs text-cyan-400 font-mono tracking-tight hidden sm:inline">
-            REPUBLIC OF VERIDIA
+            PIONEER FRONTIER
           </span>
         </div>
 
@@ -77,6 +79,15 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
 
       {/* Zone 2: National Macro Telemetry */}
       <div className="hidden lg:flex items-center gap-6 shrink-0 text-xs font-mono">
+        {/* Population */}
+        <div className="flex items-center gap-2">
+          <Users className="w-3.5 h-3.5 text-amber-400" />
+          <span className="text-slate-400">POPULATION:</span>
+          <span className="font-bold tabular-nums text-slate-100">
+            {state.totalPopulation || 12}
+          </span>
+        </div>
+
         {/* Treasury */}
         <div className="flex items-center gap-2">
           <span className="text-slate-400">TREASURY:</span>

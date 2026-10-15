@@ -2,6 +2,8 @@
  * AFTERWORLD — 3D Political & Societal Simulation Data Types
  */
 
+import { GridCell, CityZonedBuilding } from './cityGrid';
+
 export interface District {
   id: 'civic' | 'industrial' | 'residential' | 'harbor';
   name: string;
@@ -167,4 +169,10 @@ export interface SimulationState {
   historyLog: { day: number; message: string; type: 'POLICY' | 'CRISIS' | 'ECONOMIC' }[];
   isGameOver: boolean;
   gameOverReason?: string;
+  gridCells?: GridCell[];
+  zonedBuildings?: Record<string, CityZonedBuilding>;
+  rciDemand?: { res: number; com: number; ind: number };
+  milestoneLevel?: number;
+  charterId?: string;
+  totalPopulation?: number;
 }

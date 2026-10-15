@@ -14,6 +14,18 @@ import {
   PopulationStrata,
   SimulationState
 } from '../types/politicalSimulation';
+import {
+  createInitialGrid,
+  updateRoadTypes,
+  propagateUtilities,
+  simulateZonedGrowth,
+  getCurrentMilestone
+} from './cityGridCore';
+import {
+  FOUNDING_CHARTERS,
+  BUILDABLE_CATALOG,
+  CityZonedBuilding
+} from '../types/cityGrid';
 
 export function createInitialPoliticalState(): SimulationState {
   const districts: Record<string, District> = {
@@ -562,6 +574,259 @@ export function createInitialPoliticalState(): SimulationState {
 }
 
 /**
+ * Creates the genuine Zero-State Frontier City Builder where the player starts
+ * with pristine unbuilt terrain, a founding charter, and initial seed treasury,
+ * personally laying all roads, utilities, and civic structures from scratch.
+ */
+export function createPioneerZeroState(charterId: string = 'pioneer_industrial'): SimulationState {
+  const charter = FOUNDING_CHARTERS.find(c => c.id === charterId) || FOUNDING_CHARTERS[0];
+  const gridCells = createInitialGrid();
+  updateRoadTypes(gridCells);
+
+  const districts: Record<string, District> = {
+    civic: {
+      id: 'civic',
+      name: 'Pioneer Assembly Commons',
+      description: 'The administrative heart of the founding settlement.',
+      color: '#38BDF8',
+      cameraFocus: [0, 4, 0],
+      unrestLevel: 4,
+      economicOutput: 5,
+      pollution: 0
+    },
+    industrial: {
+      id: 'industrial',
+      name: 'Workshop & Extraction Sector',
+      description: 'Designated plots for craft workshops, smelting, and tool production.',
+      color: '#FB923C',
+      cameraFocus: [-15, 4, -10],
+      unrestLevel: 6,
+      economicOutput: 8,
+      pollution: 2
+    },
+    residential: {
+      id: 'residential',
+      name: 'Settler Homesteads',
+      description: 'Zoned residential parcels for incoming pioneer families.',
+      color: '#4ADE80',
+      cameraFocus: [15, 4, 15],
+      unrestLevel: 3,
+      economicOutput: 4,
+      pollution: 0
+    },
+    harbor: {
+      id: 'harbor',
+      name: 'River Basin & Marina',
+      description: 'Riverfront embankment and prospective trading terminal.',
+      color: '#818CF8',
+      cameraFocus: [20, 4, -20],
+      unrestLevel: 2,
+      economicOutput: 6,
+      pollution: 0
+    }
+  };
+
+  const buildings: Record<string, BuildingEntity> = {}; // Empty at start!
+  const zonedBuildings: Record<string, CityZonedBuilding> = {}; // Empty at start!
+
+  const strata: Record<string, PopulationStrata> = {
+    pioneers: {
+      id: 'pioneers',
+      name: 'Pioneer Settlers',
+      headcount: 0.012, // 12 settlers
+      unemploymentRate: 0,
+      monthlyIncome: 1200,
+      approval: 92,
+      strikePropensity: 0,
+      keyDemand: 'Lay arterial roads and connect drinking water',
+      preferredPartyId: 'sdu'
+    },
+    labor: {
+      id: 'labor',
+      name: 'Industrial Laborers',
+      headcount: 0.006,
+      unemploymentRate: 0,
+      monthlyIncome: 950,
+      approval: 88,
+      strikePropensity: 0,
+      keyDemand: 'Construct artisan workshops and supply tools',
+      preferredPartyId: 'sdu'
+    },
+    business: {
+      id: 'business',
+      name: 'Frontier Merchants',
+      headcount: 0.004,
+      unemploymentRate: 0,
+      monthlyIncome: 1600,
+      approval: 86,
+      strikePropensity: 0,
+      keyDemand: 'Open commercial trading posts & keep taxes low',
+      preferredPartyId: 'fmc'
+    },
+    middle: {
+      id: 'middle',
+      name: 'Artisans & Surveyors',
+      headcount: 0.002,
+      unemploymentRate: 0,
+      monthlyIncome: 1400,
+      approval: 90,
+      strikePropensity: 0,
+      keyDemand: 'Expand paved transit avenues',
+      preferredPartyId: 'gp'
+    },
+    youth: {
+      id: 'youth',
+      name: 'Pioneer Apprentices',
+      headcount: 0.001,
+      unemploymentRate: 0,
+      monthlyIncome: 850,
+      approval: 92,
+      strikePropensity: 0,
+      keyDemand: 'Preserve green public commons',
+      preferredPartyId: 'gp'
+    }
+  };
+
+  const parties: Record<string, PoliticalParty> = {
+    sdu: {
+      id: 'sdu',
+      name: 'Labor Syndicate',
+      acronym: 'LABOR',
+      ideology: 'Democratic Solidarity & Workers Rights',
+      color: '#EF4444',
+      seats: 95,
+      inCoalition: true,
+      loyalty: 90,
+      stances: { welfare: 0.8, businessTaxes: 0.7, securityPolice: 0.2, ecologicalTransition: 0.4 }
+    },
+    fmc: {
+      id: 'fmc',
+      name: 'Frontier Commerce League',
+      acronym: 'LEAGUE',
+      ideology: 'Free Trade & Private Enterprise',
+      color: '#3B82F6',
+      seats: 65,
+      inCoalition: true,
+      loyalty: 85,
+      stances: { welfare: -0.6, businessTaxes: -0.8, securityPolice: 0.4, ecologicalTransition: -0.2 }
+    },
+    sov: {
+      id: 'sov',
+      name: 'Constitutional Order',
+      acronym: 'ORDER',
+      ideology: 'Civic Stability & Rule of Law',
+      color: '#64748B',
+      seats: 25,
+      inCoalition: false,
+      loyalty: 60,
+      stances: { welfare: 0.1, businessTaxes: 0.2, securityPolice: 0.8, ecologicalTransition: -0.1 }
+    },
+    gp: {
+      id: 'gp',
+      name: 'Green Pioneer Guild',
+      acronym: 'PIONEERS',
+      ideology: 'Ecological Commons & Sustainability',
+      color: '#10B981',
+      seats: 15,
+      inCoalition: false,
+      loyalty: 75,
+      stances: { welfare: 0.4, businessTaxes: 0.4, securityPolice: -0.2, ecologicalTransition: 0.9 }
+    }
+  };
+
+  const cabinet: Record<string, CabinetMinistry> = {
+    interior: { id: 'interior', title: 'Ministry of Frontier Planning', ministerName: 'Elena Rostova', partyId: 'sdu', competence: 85, loyalty: 92 },
+    finance: { id: 'finance', title: 'Department of the Treasury', ministerName: 'Marcus Vance', partyId: 'fmc', competence: 88, loyalty: 86 },
+    labor: { id: 'labor', title: 'Labor & Settlement Council', ministerName: 'Hanna Berglund', partyId: 'sdu', competence: 82, loyalty: 90 }
+  };
+
+  const laws: LawBill[] = [
+    {
+      id: 'law-pioneer-incentive',
+      name: 'Settler Homesteading Act',
+      category: 'LABOR',
+      description: 'Grants deed subsidies to newly arrived migrant families who construct on zoned residential plots.',
+      enacted: true,
+      proposed: false,
+      supportEstimate: 140,
+      costPerMonth: 0.8,
+      revenueEffect: 0,
+      laborApprovalDelta: +12,
+      businessApprovalDelta: +5,
+      inflationDelta: +0.2
+    },
+    {
+      id: 'law-clean-well',
+      name: 'Aquifer Protection Standard',
+      category: 'ECOLOGY',
+      description: 'Restricts heavy toxic dumping near municipal artesian wells and river inlets.',
+      enacted: false,
+      proposed: false,
+      supportEstimate: 125,
+      costPerMonth: 0.4,
+      revenueEffect: 0,
+      laborApprovalDelta: +8,
+      businessApprovalDelta: -4,
+      inflationDelta: 0
+    },
+    {
+      id: 'law-enterprise-tax-shield',
+      name: 'Frontier Enterprise Exemption',
+      category: 'FISCAL',
+      description: 'Exempts fledgling commercial shops and workshops from corporate taxes during their first 60 days.',
+      enacted: false,
+      proposed: false,
+      supportEstimate: 118,
+      costPerMonth: 1.2,
+      revenueEffect: -1.2,
+      laborApprovalDelta: -3,
+      businessApprovalDelta: +16,
+      inflationDelta: -0.2
+    }
+  ];
+
+  return {
+    version: 2,
+    day: 1,
+    month: 1,
+    year: 1,
+    treasury: charter.startingTreasury,
+    gdp: 45,
+    inflationRate: 1.6,
+    taxRates: { corporate: 14, income: 15, vat: 8 },
+    spending: { welfare: 1.2, policing: 0.6, healthcare: 0.8, subsidies: 0.4 },
+    overallApproval: 90,
+    districts,
+    buildings,
+    strata,
+    parties,
+    cabinet,
+    laws,
+    crises: [],
+    causalRecords: [],
+    historyLog: [
+      {
+        day: 1,
+        message: `FOUNDING CHARTER ENACTED: "${charter.name}" proclaimed with $${charter.startingTreasury}M seed funds. Lay roads, water, and power to build your metropolis from scratch!`,
+        type: 'POLICY'
+      }
+    ],
+    isGameOver: false,
+    gridCells,
+    zonedBuildings,
+    rciDemand: { res: 50, com: 30, ind: 45 },
+    milestoneLevel: 0,
+    charterId: charter.id,
+    totalPopulation: 12
+  };
+}
+
+// Default export uses Pioneer Zero State as requested by user
+export function createDefaultInitialState(): SimulationState {
+  return createPioneerZeroState('pioneer_industrial');
+}
+
+/**
  * Deterministic Simulation Advance Step
  * Runs political, fiscal, societal, and crisis escalation mechanics.
  */
@@ -578,6 +843,102 @@ export function advancePoliticalSimulation(prev: SimulationState): SimulationSta
       next.month = 1;
       next.year += 1;
     }
+  }
+
+  // -------------------------------------------------------------
+  // 0. SPATIAL CITY GRID ADVANCE (ZERO-STATE & EXPANDING CITY)
+  // -------------------------------------------------------------
+  if (next.gridCells) {
+    if (!next.zonedBuildings) next.zonedBuildings = {};
+    if (!next.rciDemand) next.rciDemand = { res: 50, com: 30, ind: 45 };
+
+    // A. Propagate utilities
+    propagateUtilities(next.gridCells, next.zonedBuildings);
+
+    // B. Autonomous zoned growth
+    const growthResult = simulateZonedGrowth(next.gridCells, next.zonedBuildings, next.rciDemand, next.day);
+    next.rciDemand = growthResult.demandUpdate;
+
+    if (growthResult.newBuildings.length > 0) {
+      next.historyLog.push({
+        day: next.day,
+        message: `SETTLER INVESTMENT: Private construction started on ${growthResult.newBuildings.length} new zoned parcels.`,
+        type: 'ECONOMIC'
+      });
+    }
+
+    // C. Calculate capacity, jobs & tax yield
+    let totalHousingCap = 14; // Base surveyor party capacity
+    let totalJobs = 12;
+    let totalTaxYieldMonthly = 0;
+    let totalMaintenanceMonthly = 0;
+
+    for (const b of Object.values(next.zonedBuildings)) {
+      if (!b.isConstructing) {
+        totalHousingCap += b.maxCapacity || 0;
+        totalJobs += b.jobs || 0;
+        totalTaxYieldMonthly += b.taxYield || 0;
+      }
+      const catalogItem = BUILDABLE_CATALOG.find(i => i.buildingTypeId === b.subType);
+      if (catalogItem) {
+        totalMaintenanceMonthly += catalogItem.monthlyMaintenance;
+      }
+    }
+
+    // Road maintenance ($0.002M per road segment)
+    const roadCount = next.gridCells.filter(c => c.hasRoad).length;
+    totalMaintenanceMonthly += roadCount * 0.002;
+
+    // Immigrant Convoys arrive if housing capacity > current population
+    const currentPop = next.totalPopulation || 12;
+    if (totalHousingCap > currentPop && (next.treasury > 0 || next.overallApproval > 35)) {
+      const immigrantBatch = Math.min(16, Math.max(2, Math.floor((totalHousingCap - currentPop) * 0.45)));
+      next.totalPopulation = currentPop + immigrantBatch;
+
+      // Distribute to strata headcounts
+      if (next.strata.pioneers) {
+        next.strata.pioneers.headcount = Number(((next.strata.pioneers.headcount || 0.01) + immigrantBatch * 0.0003).toFixed(3));
+      }
+      if (next.strata.labor) {
+        next.strata.labor.headcount = Number(((next.strata.labor.headcount || 0.01) + immigrantBatch * 0.0004).toFixed(3));
+      }
+      if (next.strata.business) {
+        next.strata.business.headcount = Number(((next.strata.business.headcount || 0.005) + immigrantBatch * 0.0002).toFixed(3));
+      }
+      if (next.strata.middle) {
+        next.strata.middle.headcount = Number(((next.strata.middle.headcount || 0.005) + immigrantBatch * 0.0001).toFixed(3));
+      }
+    }
+
+    // Update RCI Demand based on population vs capacity
+    const housingDeficit = (next.totalPopulation || 12) - totalHousingCap;
+    if (housingDeficit >= -2) {
+      next.rciDemand.res = Math.min(100, next.rciDemand.res + 6);
+    } else {
+      next.rciDemand.res = Math.max(5, next.rciDemand.res - 3);
+    }
+    const employmentDeficit = (next.totalPopulation || 12) - totalJobs;
+    if (employmentDeficit > 0) {
+      next.rciDemand.ind = Math.min(100, next.rciDemand.ind + 5);
+      next.rciDemand.com = Math.min(100, next.rciDemand.com + 4);
+    } else {
+      next.rciDemand.ind = Math.max(5, next.rciDemand.ind - 2);
+    }
+
+    // Check Milestone Progression
+    const prevMilestone = next.milestoneLevel || 0;
+    const currentMilestone = getCurrentMilestone(next.totalPopulation || 12);
+    if (currentMilestone.level > prevMilestone) {
+      next.milestoneLevel = currentMilestone.level;
+      next.historyLog.push({
+        day: next.day,
+        message: `CIVIC MILESTONE REACHED: "${currentMilestone.name}"! Governance model evolved to ${currentMilestone.governanceModel}. New civic institutions unlocked.`,
+        type: 'POLICY'
+      });
+    }
+
+    // Factor zoned municipal tax yield and maintenance into treasury
+    next.treasury = Number((next.treasury + totalTaxYieldMonthly / 30 - totalMaintenanceMonthly / 30).toFixed(2));
   }
 
   // -------------------------------------------------------------
@@ -619,7 +980,7 @@ export function advancePoliticalSimulation(prev: SimulationState): SimulationSta
       strikeLoss += 1.2;
     }
   }
-  next.gdp = Math.max(800, Number((next.gdp - strikeLoss * 0.1).toFixed(1)));
+  next.gdp = Math.max(25, Number((next.gdp - strikeLoss * 0.1).toFixed(1)));
 
   // Inflation response to spending vs revenue
   const fiscalDeficitRatio = (dailySpending - dailyRevenue) / (dailyRevenue || 1);
@@ -632,45 +993,53 @@ export function advancePoliticalSimulation(prev: SimulationState): SimulationSta
   // -------------------------------------------------------------
   // 2. SOCIETAL STRATA & PUBLIC OPINION
   // -------------------------------------------------------------
-  // Laborers react to inflation, foundry status, and welfare
   const labor = next.strata.labor;
-  let laborDelta = 0;
-  if (next.inflationRate > 7) laborDelta -= 0.3;
-  if (next.spending.welfare >= 25) laborDelta += 0.2;
-  if (next.buildings.foundry_alpha.operatingStatus === 'ON_STRIKE') laborDelta -= 0.2;
-  labor.approval = Math.min(100, Math.max(5, Number((labor.approval + laborDelta).toFixed(1))));
+  if (labor) {
+    let laborDelta = 0;
+    if (next.inflationRate > 7) laborDelta -= 0.3;
+    if (next.spending.welfare >= 25) laborDelta += 0.2;
+    if (next.buildings.foundry_alpha?.operatingStatus === 'ON_STRIKE') laborDelta -= 0.2;
+    labor.approval = Math.min(100, Math.max(5, Number((labor.approval + laborDelta).toFixed(1))));
+  }
 
-  // Business owners react to corporate taxes & police order
   const business = next.strata.business;
-  let bizDelta = 0;
-  if (next.taxRates.corporate > 25) bizDelta -= 0.3;
-  if (next.spending.policing >= 16) bizDelta += 0.2;
-  business.approval = Math.min(100, Math.max(5, Number((business.approval + bizDelta).toFixed(1))));
+  if (business) {
+    let bizDelta = 0;
+    if (next.taxRates.corporate > 25) bizDelta -= 0.3;
+    if (next.spending.policing >= 16) bizDelta += 0.2;
+    business.approval = Math.min(100, Math.max(5, Number((business.approval + bizDelta).toFixed(1))));
+  }
 
-  // Middle class & Youth
   const middle = next.strata.middle;
-  middle.approval = Math.min(100, Math.max(5, Number((middle.approval + (next.inflationRate > 6 ? -0.15 : 0.1)).toFixed(1))));
+  if (middle) {
+    middle.approval = Math.min(100, Math.max(5, Number((middle.approval + (next.inflationRate > 6 ? -0.15 : 0.1)).toFixed(1))));
+  }
 
   const youth = next.strata.youth;
-  youth.approval = Math.min(100, Math.max(5, Number((youth.approval + (next.districts.industrial.pollution > 60 ? -0.2 : 0.05)).toFixed(1))));
+  if (youth) {
+    youth.approval = Math.min(100, Math.max(5, Number((youth.approval + ((next.districts.industrial?.pollution || 0) > 60 ? -0.2 : 0.05)).toFixed(1))));
+  }
 
   // Calculate Weighted National Approval
-  const totalPop = labor.headcount + middle.headcount + business.headcount + youth.headcount;
-  const weightedApproval =
-    (labor.approval * labor.headcount +
-      middle.approval * middle.headcount +
-      business.approval * business.headcount +
-      youth.approval * youth.headcount) / totalPop;
-
-  next.overallApproval = Number(weightedApproval.toFixed(1));
+  let totalPop = 0;
+  let totalWeighted = 0;
+  for (const s of Object.values(next.strata)) {
+    totalPop += s.headcount;
+    totalWeighted += s.approval * s.headcount;
+  }
+  if (totalPop > 0) {
+    next.overallApproval = Number((totalWeighted / totalPop).toFixed(1));
+  }
 
   // -------------------------------------------------------------
   // 3. PARLIAMENTARY COALITION STABILITY
   // -------------------------------------------------------------
-  // SDU loyalty tracks labor approval
-  next.parties.sdu.loyalty = Math.min(100, Math.max(0, Number((labor.approval * 1.1).toFixed(0))));
-  // FMC loyalty tracks business & treasury health
-  next.parties.fmc.loyalty = Math.min(100, Math.max(0, Number((business.approval * 0.8 + (next.treasury > 50 ? 20 : 0)).toFixed(0))));
+  if (next.parties.sdu && labor) {
+    next.parties.sdu.loyalty = Math.min(100, Math.max(0, Number((labor.approval * 1.1).toFixed(0))));
+  }
+  if (next.parties.fmc && business) {
+    next.parties.fmc.loyalty = Math.min(100, Math.max(0, Number((business.approval * 0.8 + (next.treasury > 50 ? 20 : 0)).toFixed(0))));
+  }
 
   // Check Coalition Collapse condition
   if (next.parties.sdu.loyalty < 25 && next.parties.sdu.inCoalition) {

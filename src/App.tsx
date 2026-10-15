@@ -1,28 +1,32 @@
 /**
  * AFTERWORLD — Full 3D Living Political & Societal Simulation
  * Real-time 3D City Viewport (Three.js WebGL) coupled with deterministic political, economic,
- * and societal simulation systems.
+ * and societal simulation systems. Starts from scratch with a pristine frontier charter.
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { SimulationState, BuildingEntity } from './types/politicalSimulation';
+import { BuildableItem, CityZonedBuilding, BUILDABLE_CATALOG } from './types/cityGrid';
 import { 
   createInitialPoliticalState, 
+  createPioneerZeroState,
   advancePoliticalSimulation, 
   resolveCrisisDecision, 
   toggleLawBill,
   updateTaxRate,
   updateSpending
 } from './engine/politicalCore';
+import { placeItemOnGrid } from './engine/cityGridCore';
 import { ThreeCityViewport } from './three/ThreeCityViewport';
 import { TopTelemetryBar } from './components/TopTelemetryBar';
 import { BottomDock } from './components/BottomDock';
 import { GameOverModal } from './components/GameOverModal';
 import { ResetConfirmModal } from './components/ResetConfirmModal';
 import { RegionalLabModal } from './components/RegionalLabModal';
+import { FoundingCharterModal } from './components/FoundingCharterModal';
 import { CheckCircle2, AlertTriangle, Info, X } from 'lucide-react';
 
-const SAVE_KEY = 'afterworld_3d_state_v2';
+const SAVE_KEY = 'afterworld_3d_state_v3';
 
 export default function App() {
   // Toast Notification State
@@ -35,11 +39,15 @@ export default function App() {
     }, 3500);
   };
 
-  // Reset confirmation dialog state
+  // Modal States
   const [isResetConfirmOpen, setIsResetConfirmOpen] = useState<boolean>(false);
-
-  // Regional macro systems lab modal state
   const [isRegionalLabOpen, setIsRegionalLabOpen] = useState<boolean>(false);
+  const [isCharterModalOpen, setIsCharterModalOpen] = useState<boolean>(false);
+
+  // Active Construction & Building State
+  const [activeBuildTool, setActiveBuildTool] = useState<BuildableItem | null>(null);
+  const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
+  const [cameraTargetCoord, setCameraTargetCoord] = useState<[number, number, number] | null>(null);
 
   // -------------------------------------------------------------
   // SIMULATION STATE & LOCAL PERSISTENCE
@@ -49,20 +57,19 @@ export default function App() {
       const saved = localStorage.getItem(SAVE_KEY);
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (parsed && parsed.version === 2 && parsed.districts && parsed.buildings && typeof parsed.treasury === 'number') {
+        if (parsed && parsed.version === 2 && parsed.districts && typeof parsed.treasury === 'number') {
           return parsed;
         }
       }
     } catch (e) {
       console.warn('Failed to load saved 3D state, loading genesis default:', e);
     }
-    return createInitialPoliticalState();
+    // Starts from scratch: pristine terrain, zero pre-placed buildings, founding charter
+    return createPioneerZeroState('pioneer_industrial');
   });
 
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [simSpeed, setSimSpeed] = useState<number>(1);
-  const [selectedBuildingId, setSelectedBuildingId] = useState<string | null>(null);
-  const [cameraTargetCoord, setCameraTargetCoord] = useState<[number, number, number] | null>(null);
 
   // Auto-save on simulation state update
   useEffect(() => {
@@ -92,7 +99,7 @@ export default function App() {
     return () => clearInterval(timer);
   }, [isRunning, simSpeed, simulationState.isGameOver, handleStepForward]);
 
-  // Spacebar Play/Pause shortcut
+  // Spacebar Play/Pause and Escape key shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
@@ -101,11 +108,51 @@ export default function App() {
       if (e.code === 'Space') {
         e.preventDefault();
         setIsRunning(r => !r);
+      } else if (e.code === 'Escape') {
+        e.preventDefault();
+        setActiveBuildTool(null);
+        setSelectedBuildingId(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, []);
+
+  // -------------------------------------------------------------
+  // INTERACTIVE CONSTRUCTION & PLACEMENT HANDLERS
+  // -------------------------------------------------------------
+  const handlePlaceItem = (gridX: number, gridZ: number, item: BuildableItem) => {
+    const result = placeItemOnGrid(simulationState, gridX, gridZ, item);
+    if (result.success && result.nextState) {
+      setSimulationState(result.nextState);
+      showToast(`${item.name} constructed at [${gridX}, ${gridZ}]`, 'success');
+    } else {
+      showToast(result.reason || 'Placement blocked', 'error');
+    }
+  };
+
+  const handleDemolishZonedBuilding = (buildingId: string) => {
+    const b = simulationState.zonedBuildings?.[buildingId];
+    if (!b) return;
+
+    const demolishTool = BUILDABLE_CATALOG.find(i => i.category === 'DEMOLISH')!;
+    const result = placeItemOnGrid(simulationState, b.gridX, b.gridZ, demolishTool);
+    if (result.success && result.nextState) {
+      setSimulationState(result.nextState);
+      setSelectedBuildingId(null);
+      showToast(`Demolished ${b.name}. Reclaimed site footprint.`, 'info');
+    }
+  };
+
+  const handleSelectCharter = (charterId: string) => {
+    const fresh = createPioneerZeroState(charterId);
+    setSimulationState(fresh);
+    setIsRunning(false);
+    setSelectedBuildingId(null);
+    setActiveBuildTool(null);
+    localStorage.removeItem(SAVE_KEY);
+    showToast(`Charter enacted! Lay your first roads and utilities.`, 'success');
+  };
 
   // -------------------------------------------------------------
   // INTERACTIVE GOVERNANCE HANDLERS
@@ -172,18 +219,25 @@ export default function App() {
   };
 
   const handleConfirmReset = () => {
-    const fresh = createInitialPoliticalState();
+    const fresh = createPioneerZeroState('pioneer_industrial');
     setSimulationState(fresh);
     setIsRunning(false);
     setSelectedBuildingId(null);
+    setActiveBuildTool(null);
     localStorage.removeItem(SAVE_KEY);
     setIsResetConfirmOpen(false);
-    showToast('Republic simulation reset to Day 1 genesis defaults', 'info');
+    showToast('Simulation reset to Day 1 unbuilt virgin frontier', 'info');
   };
 
+  // Inspect selected building
   const selectedBuilding: BuildingEntity | null = 
-    selectedBuildingId && simulationState.buildings[selectedBuildingId]
+    selectedBuildingId && simulationState.buildings?.[selectedBuildingId]
       ? simulationState.buildings[selectedBuildingId]
+      : null;
+
+  const selectedZonedBuilding: CityZonedBuilding | null =
+    selectedBuildingId && simulationState.zonedBuildings?.[selectedBuildingId]
+      ? simulationState.zonedBuildings[selectedBuildingId]
       : null;
 
   return (
@@ -203,10 +257,13 @@ export default function App() {
         onToggleMode={() => setIsRegionalLabOpen(o => !o)}
       />
 
-      {/* 2. Real-Time 3D WebGL City Viewport */}
+      {/* 2. Real-Time 3D WebGL City Viewport & Construction Surface */}
       <main className="relative flex-1 w-full h-full overflow-hidden">
         <ThreeCityViewport
           simulationState={simulationState}
+          activeBuildTool={activeBuildTool}
+          onPlaceItem={handlePlaceItem}
+          onCancelBuildTool={() => setActiveBuildTool(null)}
           selectedBuildingId={selectedBuildingId}
           onSelectBuilding={setSelectedBuildingId}
           cameraTargetCoord={cameraTargetCoord}
@@ -214,38 +271,51 @@ export default function App() {
         />
       </main>
 
-      {/* 3. Collapsible Bottom Management Dock (Zero Occlusion) */}
+      {/* 3. Collapsible Bottom Management & Construction Dock */}
       <BottomDock
         state={simulationState}
+        activeBuildTool={activeBuildTool}
+        onSelectBuildTool={setActiveBuildTool}
         selectedBuilding={selectedBuilding}
+        selectedZonedBuilding={selectedZonedBuilding}
         onSelectBuilding={setSelectedBuildingId}
         onFlyToCoord={handleFlyToCoord}
         onToggleLaw={handleToggleLaw}
         onResolveCrisis={handleResolveCrisis}
         onUpdateTaxRate={handleUpdateTaxRate}
         onUpdateSpending={handleUpdateSpending}
+        onOpenCharterModal={() => setIsCharterModalOpen(true)}
+        onDemolishZonedBuilding={handleDemolishZonedBuilding}
       />
 
-      {/* 4. Game Over / State Collapse Modal */}
+      {/* 4. Founding Constitutional Charter Modal */}
+      <FoundingCharterModal
+        isOpen={isCharterModalOpen}
+        onClose={() => setIsCharterModalOpen(false)}
+        onSelectCharter={handleSelectCharter}
+        currentCharterId={simulationState.charterId}
+      />
+
+      {/* 5. Game Over Modal */}
       <GameOverModal
         state={simulationState}
         onRestart={handleConfirmReset}
       />
 
-      {/* 5. In-App Reset Confirmation Modal */}
+      {/* 6. In-App Reset Confirmation Modal */}
       <ResetConfirmModal
         isOpen={isResetConfirmOpen}
         onConfirm={handleConfirmReset}
         onCancel={() => setIsResetConfirmOpen(false)}
       />
 
-      {/* 6. Macro Regional Systems Supply Lab Modal */}
+      {/* 7. Macro Regional Systems Supply Lab Modal */}
       <RegionalLabModal
         isOpen={isRegionalLabOpen}
         onClose={() => setIsRegionalLabOpen(false)}
       />
 
-      {/* 7. Floating Toast Notification HUD */}
+      {/* 8. Floating Toast Notification HUD */}
       {toast && (
         <div className="fixed top-14 right-4 z-50 flex items-center gap-2.5 px-4 py-2.5 rounded-xl shadow-2xl border text-xs font-mono backdrop-blur-md transition-all animate-fade-in bg-[#0B0F19]/95 border-slate-700 text-slate-200">
           {toast.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />}
