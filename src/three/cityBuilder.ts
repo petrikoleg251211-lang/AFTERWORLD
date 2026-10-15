@@ -220,13 +220,13 @@ export function buildProceduralBuilding(
       group.add(ring);
     }
 
-    // Strike picket barricade if on strike
-    if (b.operatingStatus === 'ON_STRIKE') {
-      const barricadeGeo = new THREE.BoxGeometry(sx * 0.8, 1.2, 0.4);
-      const barricade = new THREE.Mesh(barricadeGeo, materials.protestBanner);
-      barricade.position.set(0, 0.6, sz * 0.55);
-      group.add(barricade);
-    }
+    // Strike picket barricade
+    const barricadeGeo = new THREE.BoxGeometry(sx * 0.8, 1.2, 0.4);
+    const barricade = new THREE.Mesh(barricadeGeo, materials.protestBanner);
+    barricade.position.set(0, 0.6, sz * 0.55);
+    barricade.name = 'strike_barricade';
+    barricade.visible = b.operatingStatus === 'ON_STRIKE';
+    group.add(barricade);
   }
   // 3. RESIDENTIAL TENEMENTS (Multi-level brick facade with roof terraces)
   else if (b.type === 'TENEMENT') {

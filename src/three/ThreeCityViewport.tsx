@@ -3,8 +3,9 @@
  * Real-time controllable tactical isometric camera, raycasting selection, and animated simulation.
  */
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { BuildingEntity, District, SimulationState } from '../types/politicalSimulation';
 import { 
   CityMaterials, 
@@ -14,6 +15,10 @@ import {
   createAgentSystems, 
   AnimatedAgentSystem 
 } from './cityBuilder';
+
+// Pre-allocated math objects to eliminate garbage collection inside loops
+const _raycaster = new THREE.Raycaster();
+const _pointerVec = new THREE.Vector2();
 
 interface ThreeCityViewportProps {
   simulationState: SimulationState;
@@ -53,6 +58,21 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
   // Smoke particles
   const smokeParticlesRef = useRef<THREE.Points | null>(null);
 
+  // Live simulation state reference to avoid stale closures in animate loop
+  const simStateRef = useRef<SimulationState>(simulationState);
+  useEffect(() => {
+    simStateRef.current = simulationState;
+
+    // Dynamically update building visuals (e.g. strike barricade on foundry)
+    const foundryMesh = buildingMeshesRef.current.get('foundry_alpha');
+    if (foundryMesh) {
+      const barricade = foundryMesh.getObjectByName('strike_barricade');
+      if (barricade) {
+        barricade.visible = simulationState.buildings.foundry_alpha?.operatingStatus === 'ON_STRIKE';
+      }
+    }
+  }, [simulationState]);
+
   // -------------------------------------------------------------
   // INITIALIZE THREE.JS ENGINE
   // -------------------------------------------------------------
@@ -86,7 +106,13 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
 
     container.appendChild(renderer.domElement);
 
-    // 4. Lighting Rig (Warm Key + Cool Hemisphere Fill)
+    // 4. Studio Environment Reflection (RoomEnvironment)
+    const pmremGenerator = new THREE.PMREMGenerator(renderer);
+    const envTexture = pmremGenerator.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environment = envTexture;
+    pmremGenerator.dispose();
+
+    // 5. Lighting Rig (Warm Key + Cool Hemisphere Fill)
     const hemiLight = new THREE.HemisphereLight(0xBAE6FD, 0x1E293B, 0.9);
     hemiLight.position.set(0, 50, 0);
     scene.add(hemiLight);
@@ -177,9 +203,10 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
       camera.position.z = THREE.MathUtils.damp(camera.position.z, cz, 8, delta);
       camera.lookAt(target);
 
-      // Check if strikes/protests are active
-      const isStriking = simulationState.buildings.foundry_alpha?.operatingStatus === 'ON_STRIKE';
-      const hasProtest = simulationState.districts.civic.unrestLevel > 40 || isStriking;
+      // Read current simulation state from ref to avoid stale closures
+      const currentSim = simStateRef.current;
+      const isStriking = currentSim.buildings.foundry_alpha?.operatingStatus === 'ON_STRIKE';
+      const hasProtest = (currentSim.districts.civic?.unrestLevel ?? 0) > 40 || isStriking;
 
       // Update Agents & Traffic
       agentSys.update(delta, hasProtest);
@@ -203,6 +230,22 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
 
     animate();
 
+    // WebGL Context Loss Handlers
+    const handleContextLost = (event: Event) => {
+      event.preventDefault();
+      console.warn('WebGL context lost. Pausing rendering.');
+      cancelAnimationFrame(animationFrameId);
+    };
+
+    const handleContextRestored = () => {
+      console.info('WebGL context restored. Re-animating.');
+      animate();
+    };
+
+    const dom = renderer.domElement;
+    dom.addEventListener('webglcontextlost', handleContextLost, false);
+    dom.addEventListener('webglcontextrestored', handleContextRestored, false);
+
     // Resize Handler
     const handleResize = () => {
       if (!container) return;
@@ -217,10 +260,34 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
 
     return () => {
       cancelAnimationFrame(animationFrameId);
+      dom.removeEventListener('webglcontextlost', handleContextLost);
+      dom.removeEventListener('webglcontextrestored', handleContextRestored);
       window.removeEventListener('resize', handleResize);
+
+      // Dispose all meshes, geometries, and materials in scene to avoid GPU leaks
+      scene.traverse((obj) => {
+        if (obj instanceof THREE.Mesh || obj instanceof THREE.Points || obj instanceof THREE.InstancedMesh) {
+          if (obj.geometry) {
+            obj.geometry.dispose();
+          }
+        }
+      });
+
+      if (materialsRef.current) {
+        Object.values(materialsRef.current).forEach((mat) => {
+          mat.dispose();
+        });
+      }
+
+      envTexture.dispose();
+      smokeGeo.dispose();
+      smokeMat.dispose();
+      ringGeo.dispose();
+      ringMat.dispose();
+
       renderer.dispose();
-      if (container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement);
+      if (container.contains(dom)) {
+        container.removeChild(dom);
       }
     };
   }, []);
@@ -307,10 +374,10 @@ export const ThreeCityViewport: React.FC<ThreeCityViewportProps> = ({
       const x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       const y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
 
-      const raycaster = new THREE.Raycaster();
-      raycaster.setFromCamera(new THREE.Vector2(x, y), cameraRef.current);
+      _pointerVec.set(x, y);
+      _raycaster.setFromCamera(_pointerVec, cameraRef.current);
 
-      const intersects = raycaster.intersectObjects(sceneRef.current.children, true);
+      const intersects = _raycaster.intersectObjects(sceneRef.current.children, true);
       let foundId: string | null = null;
 
       for (const hit of intersects) {

@@ -505,6 +505,7 @@ export function createInitialPoliticalState(): SimulationState {
   };
 
   return {
+    version: 2,
     day: 1,
     month: 1,
     year: 1,
@@ -530,6 +531,20 @@ export function createInitialPoliticalState(): SimulationState {
     cabinet,
     laws,
     crises: [initialCrisis],
+    causalRecords: [
+      {
+        id: 'causal-init-1',
+        day: 1,
+        domain: 'CRISIS',
+        variable: 'operatingStatus',
+        previousValue: 1,
+        nextValue: 0,
+        delta: -1,
+        cause: 'Global scrap steel price drop',
+        explanation: 'Veridia Heavy Foundry No. 1 locked out 4,200 steelworkers, triggering wildcat strike.',
+        affectedDistrictId: 'industrial'
+      }
+    ],
     historyLog: [
       {
         day: 1,
@@ -568,11 +583,22 @@ export function advancePoliticalSimulation(prev: SimulationState): SimulationSta
   // -------------------------------------------------------------
   // 1. MACRO ECONOMIC ENGINE
   // -------------------------------------------------------------
+  // Enacted laws budget effects
+  let lawMonthlyCosts = 0;
+  let lawMonthlyRevenue = 0;
+  for (const law of next.laws) {
+    if (law.enacted) {
+      lawMonthlyCosts += law.costPerMonth;
+      lawMonthlyRevenue += law.revenueEffect;
+    }
+  }
+
   // Calculate total monthly revenues
   const totalTaxRevenueMonthly =
     (next.gdp * 0.08 * (next.taxRates.income / 20)) +
     (next.gdp * 0.05 * (next.taxRates.corporate / 20)) +
-    (next.gdp * 0.04 * (next.taxRates.vat / 15));
+    (next.gdp * 0.04 * (next.taxRates.vat / 15)) +
+    lawMonthlyRevenue;
 
   // Daily budget flow
   const dailyRevenue = totalTaxRevenueMonthly / 30;
@@ -580,7 +606,8 @@ export function advancePoliticalSimulation(prev: SimulationState): SimulationSta
     next.spending.welfare +
     next.spending.policing +
     next.spending.healthcare +
-    next.spending.subsidies;
+    next.spending.subsidies +
+    lawMonthlyCosts;
   const dailySpending = totalMonthlySpending / 30;
 
   next.treasury = Number((next.treasury + dailyRevenue - dailySpending).toFixed(2));
@@ -652,6 +679,18 @@ export function advancePoliticalSimulation(prev: SimulationState): SimulationSta
       day: next.day,
       message: 'POLITICAL EARTHQUAKE: The Social Democratic Union (SDU) withdraws from cabinet! The government has lost its parliamentary majority (down to 64/200 seats).',
       type: 'POLICY'
+    });
+    next.causalRecords = next.causalRecords || [];
+    next.causalRecords.push({
+      id: `causal-sdu-exit-${Date.now()}`,
+      day: next.day,
+      domain: 'POLITICAL',
+      variable: 'coalitionSeats',
+      previousValue: 132,
+      nextValue: 64,
+      delta: -68,
+      cause: 'SDU Parliamentary Exit',
+      explanation: 'Labor satisfaction fell below 25%, causing SDU deputies to walk out of the governing coalition.'
     });
   }
 
@@ -850,6 +889,21 @@ export function resolveCrisisDecision(
     type: 'CRISIS'
   });
 
+  // Log causal record
+  next.causalRecords = next.causalRecords || [];
+  next.causalRecords.push({
+    id: `causal-crisis-${Date.now()}`,
+    day: next.day,
+    domain: 'CRISIS',
+    variable: 'unrestLevel',
+    previousValue: state.districts[crisis.districtId]?.unrestLevel ?? 50,
+    nextValue: next.districts[crisis.districtId]?.unrestLevel ?? 50,
+    delta: option.effects.unrestDelta ?? 0,
+    cause: `Executive Crisis Resolution: ${option.label}`,
+    explanation: option.narrativeOutcome,
+    affectedDistrictId: crisis.districtId
+  });
+
   return next;
 }
 
@@ -860,6 +914,8 @@ export function toggleLawBill(state: SimulationState, billId: string): Simulatio
   const next: SimulationState = JSON.parse(JSON.stringify(state));
   const bill = next.laws.find(l => l.id === billId);
   if (!bill) return state;
+
+  next.causalRecords = next.causalRecords || [];
 
   // Calculate current coalition vote support
   let votingSeats = 0;
@@ -879,9 +935,22 @@ export function toggleLawBill(state: SimulationState, billId: string): Simulatio
     // Attempt to pass
     if (votingSeats >= 101) {
       bill.enacted = true;
-      next.strata.labor.approval += bill.laborApprovalDelta;
-      next.strata.business.approval += bill.businessApprovalDelta;
-      next.inflationRate = Math.max(1, next.inflationRate + bill.inflationDelta);
+      next.strata.labor.approval = Math.min(100, Math.max(0, next.strata.labor.approval + bill.laborApprovalDelta));
+      next.strata.business.approval = Math.min(100, Math.max(0, next.strata.business.approval + bill.businessApprovalDelta));
+      next.inflationRate = Math.max(1, Number((next.inflationRate + bill.inflationDelta).toFixed(2)));
+
+      next.causalRecords.push({
+        id: `causal-bill-${bill.id}-${Date.now()}`,
+        day: next.day,
+        domain: 'POLITICAL',
+        variable: 'laborApproval',
+        previousValue: state.strata.labor.approval,
+        nextValue: next.strata.labor.approval,
+        delta: bill.laborApprovalDelta,
+        cause: `Enactment of [${bill.name}]`,
+        explanation: `Bill passed with ${votingSeats}/200 parliamentary votes. Labor sentiment shifted by ${bill.laborApprovalDelta}%.`
+      });
+
       next.historyLog.push({
         day: next.day,
         message: `PARLIAMENTARY ACT PASSED: "${bill.name}" passed with ${votingSeats}/200 deputy votes.`,
@@ -897,12 +966,84 @@ export function toggleLawBill(state: SimulationState, billId: string): Simulatio
   } else {
     // Repeal
     bill.enacted = false;
+    next.strata.labor.approval = Math.min(100, Math.max(0, next.strata.labor.approval - bill.laborApprovalDelta));
+    next.strata.business.approval = Math.min(100, Math.max(0, next.strata.business.approval - bill.businessApprovalDelta));
+    next.inflationRate = Math.max(1, Number((next.inflationRate - bill.inflationDelta).toFixed(2)));
+
+    next.causalRecords.push({
+      id: `causal-repeal-${bill.id}-${Date.now()}`,
+      day: next.day,
+      domain: 'POLITICAL',
+      variable: 'laborApproval',
+      previousValue: state.strata.labor.approval,
+      nextValue: next.strata.labor.approval,
+      delta: -bill.laborApprovalDelta,
+      cause: `Repeal of [${bill.name}]`,
+      explanation: `Law repealed by parliamentary vote. Labor sentiment reverted by ${-bill.laborApprovalDelta}%.`
+    });
+
     next.historyLog.push({
       day: next.day,
       message: `LAW REPEALED: "${bill.name}" has been revoked by parliamentary vote.`,
       type: 'POLICY'
     });
   }
+
+  return next;
+}
+
+/**
+ * Mutate tax rates with causal record tracing
+ */
+export function updateTaxRate(
+  state: SimulationState,
+  taxKey: 'corporate' | 'income' | 'vat',
+  value: number
+): SimulationState {
+  const next: SimulationState = JSON.parse(JSON.stringify(state));
+  const prevVal = next.taxRates[taxKey];
+  next.taxRates[taxKey] = value;
+  next.causalRecords = next.causalRecords || [];
+
+  next.causalRecords.push({
+    id: `causal-tax-${taxKey}-${Date.now()}`,
+    day: next.day,
+    domain: 'FISCAL',
+    variable: `tax_${taxKey}`,
+    previousValue: prevVal,
+    nextValue: value,
+    delta: value - prevVal,
+    cause: `Cabinet Decree on ${taxKey.toUpperCase()} Tax`,
+    explanation: `${taxKey.toUpperCase()} tax adjusted from ${prevVal}% to ${value}%, changing daily revenue baseline.`
+  });
+
+  return next;
+}
+
+/**
+ * Mutate discretionary public spending with causal record tracing
+ */
+export function updateSpending(
+  state: SimulationState,
+  spendKey: 'welfare' | 'policing' | 'healthcare' | 'subsidies',
+  value: number
+): SimulationState {
+  const next: SimulationState = JSON.parse(JSON.stringify(state));
+  const prevVal = next.spending[spendKey];
+  next.spending[spendKey] = value;
+  next.causalRecords = next.causalRecords || [];
+
+  next.causalRecords.push({
+    id: `causal-spend-${spendKey}-${Date.now()}`,
+    day: next.day,
+    domain: 'FISCAL',
+    variable: `spend_${spendKey}`,
+    previousValue: prevVal,
+    nextValue: value,
+    delta: value - prevVal,
+    cause: `Budget Allocation: ${spendKey.toUpperCase()}`,
+    explanation: `${spendKey.toUpperCase()} monthly spending adjusted from $${prevVal}M to $${value}M.`
+  });
 
   return next;
 }

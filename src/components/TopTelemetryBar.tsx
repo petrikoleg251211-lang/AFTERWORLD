@@ -10,12 +10,14 @@ import {
   SkipForward, 
   Save, 
   Upload, 
+  RotateCcw,
   AlertTriangle, 
   DollarSign, 
   TrendingUp, 
   Users, 
   Building2,
-  Calendar
+  Calendar,
+  Globe
 } from 'lucide-react';
 import { SimulationState } from '../types/politicalSimulation';
 
@@ -29,6 +31,8 @@ interface TopTelemetryBarProps {
   onSaveGame: () => void;
   onLoadGame: () => void;
   onResetGame: () => void;
+  mode?: 'METROPOLIS' | 'REGIONAL';
+  onToggleMode?: (mode: 'METROPOLIS' | 'REGIONAL') => void;
 }
 
 export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
@@ -40,7 +44,9 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
   onChangeSpeed,
   onSaveGame,
   onLoadGame,
-  onResetGame
+  onResetGame,
+  mode,
+  onToggleMode
 }) => {
   const activeStrikes = Object.values(state.buildings).filter(b => b.operatingStatus === 'ON_STRIKE').length;
   const coalitionSeats = state.parties.sdu.inCoalition ? state.parties.sdu.seats + state.parties.fmc.seats : state.parties.fmc.seats;
@@ -158,7 +164,7 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
           </div>
         </div>
 
-        {/* Quick Save / Load */}
+        {/* Quick Save / Load / Reset */}
         <button
           onClick={onSaveGame}
           className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-900 border border-slate-800 rounded transition-colors"
@@ -176,6 +182,41 @@ export const TopTelemetryBar: React.FC<TopTelemetryBarProps> = ({
         >
           <Upload className="w-4 h-4" />
         </button>
+
+        <button
+          onClick={onResetGame}
+          className="p-1.5 text-slate-400 hover:text-rose-300 hover:bg-rose-950/30 border border-slate-800 rounded transition-colors"
+          title="Reset Simulation to Genesis Defaults"
+          aria-label="Reset Game"
+        >
+          <RotateCcw className="w-4 h-4" />
+        </button>
+
+        {/* Optional View Mode Switcher */}
+        {onToggleMode && (
+          <div className="hidden xl:flex items-center ml-2 pl-2 border-l border-slate-800 font-mono text-[11px]">
+            <button
+              onClick={() => onToggleMode(mode === 'METROPOLIS' ? 'REGIONAL' : 'METROPOLIS')}
+              className={`px-2.5 py-1 rounded-md flex items-center gap-1.5 transition-colors border ${
+                mode === 'REGIONAL'
+                  ? 'bg-emerald-950/60 text-emerald-300 border-emerald-700/80'
+                  : 'bg-cyan-950/50 text-cyan-300 border-cyan-850 hover:bg-cyan-900/60'
+              }`}
+            >
+              {mode === 'REGIONAL' ? (
+                <>
+                  <Building2 className="w-3.5 h-3.5" />
+                  <span>Switch to 3D City View</span>
+                </>
+              ) : (
+                <>
+                  <Globe className="w-3.5 h-3.5" />
+                  <span>Regional Systems Lab</span>
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </div>
     </header>
   );

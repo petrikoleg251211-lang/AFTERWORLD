@@ -123,7 +123,21 @@ export interface ActiveCrisis {
   occurredAtDay: number;
 }
 
+export interface PoliticalCausalRecord {
+  id: string;
+  day: number;
+  domain: 'FISCAL' | 'POLITICAL' | 'LABOR' | 'CRISIS' | 'SECURITY';
+  variable: string;
+  previousValue: number;
+  nextValue: number;
+  delta: number;
+  cause: string;
+  explanation: string;
+  affectedDistrictId?: 'civic' | 'industrial' | 'residential' | 'harbor';
+}
+
 export interface SimulationState {
+  version: number;
   day: number;
   month: number;
   year: number;
@@ -149,6 +163,7 @@ export interface SimulationState {
   cabinet: Record<string, CabinetMinistry>;
   laws: LawBill[];
   crises: ActiveCrisis[];
+  causalRecords: PoliticalCausalRecord[];
   historyLog: { day: number; message: string; type: 'POLICY' | 'CRISIS' | 'ECONOMIC' }[];
   isGameOver: boolean;
   gameOverReason?: string;

@@ -17,7 +17,8 @@ import {
   Sliders, 
   Camera, 
   ShieldAlert,
-  ArrowRight
+  ArrowRight,
+  Workflow
 } from 'lucide-react';
 import { 
   BuildingEntity, 
@@ -26,7 +27,7 @@ import {
   SimulationState 
 } from '../types/politicalSimulation';
 
-export type DockTab = 'OVERVIEW' | 'CABINET_LAWS' | 'ECONOMY' | 'PARLIAMENT' | 'CRISES' | 'INSPECTOR';
+export type DockTab = 'OVERVIEW' | 'CABINET_LAWS' | 'ECONOMY' | 'PARLIAMENT' | 'CRISES' | 'CAUSAL' | 'INSPECTOR';
 
 interface BottomDockProps {
   state: SimulationState;
@@ -80,6 +81,11 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                   key: 'CRISES', 
                   label: `Crises (${unresolvedCrises.length})`, 
                   icon: <AlertOctagon className="w-4 h-4 text-rose-400" /> 
+                },
+                {
+                  key: 'CAUSAL',
+                  label: `Causal Log (${(state.causalRecords || []).length})`,
+                  icon: <Workflow className="w-4 h-4 text-cyan-400" />
                 },
                 { 
                   key: 'INSPECTOR', 
@@ -561,7 +567,80 @@ export const BottomDock: React.FC<BottomDockProps> = ({
               </div>
             )}
 
-            {/* 6. INSPECTOR TAB */}
+            {/* 6. CAUSAL LOG TAB */}
+            {activeTab === 'CAUSAL' && (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-100 flex items-center gap-1.5 uppercase tracking-wider">
+                      <Workflow className="w-4 h-4 text-cyan-400" />
+                      <span>Causal Chain of Decisions & Consequences</span>
+                    </h4>
+                    <span className="text-[10px] text-slate-400">
+                      Transparent lineage tracing: why variables changed and which policy or crisis triggered it.
+                    </span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-mono">
+                    {(state.causalRecords || []).length} events logged
+                  </span>
+                </div>
+
+                {(!state.causalRecords || state.causalRecords.length === 0) ? (
+                  <div className="p-8 text-center text-slate-500">
+                    No causal events logged yet. Adjust taxes, enact a law, or resolve a crisis to generate causal traces.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[230px] overflow-y-auto pr-1">
+                    {state.causalRecords.slice().reverse().map(rec => (
+                      <div
+                        key={rec.id}
+                        className="p-3 bg-slate-900/60 border border-slate-800 rounded-lg space-y-1.5 text-xs font-mono"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-cyan-400 font-bold">Day {rec.day}</span>
+                            <span className="text-slate-600">·</span>
+                            <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-slate-800 text-slate-300">
+                              {rec.domain}
+                            </span>
+                            <strong className="text-slate-200">{rec.cause}</strong>
+                          </div>
+
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold tabular-nums ${
+                            rec.delta > 0
+                              ? 'bg-emerald-500/20 text-emerald-300'
+                              : rec.delta < 0
+                              ? 'bg-rose-500/20 text-rose-300'
+                              : 'bg-slate-800 text-slate-400'
+                          }`}>
+                            {rec.variable}: {rec.delta > 0 ? `+${rec.delta}` : rec.delta}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-slate-300 leading-relaxed">
+                          {rec.explanation}
+                        </p>
+
+                        {rec.affectedDistrictId && (
+                          <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1 border-t border-slate-800/60">
+                            <span>Affected District: <strong className="text-slate-300">{rec.affectedDistrictId.toUpperCase()}</strong></span>
+                            <button
+                              onClick={() => onFlyToCoord(state.districts[rec.affectedDistrictId!].cameraFocus)}
+                              className="text-cyan-400 hover:text-cyan-300 flex items-center gap-1"
+                            >
+                              <Camera className="w-3 h-3" />
+                              <span>View District</span>
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* 7. INSPECTOR TAB */}
             {activeTab === 'INSPECTOR' && (
               <div>
                 {selectedBuilding ? (
